@@ -1,0 +1,32 @@
+[workspace]
+members = ["apps/cargo-cleaner", "packages/cleaner-core"]
+resolver = "3"
+
+[workspace.package]
+edition = "2024"
+rust-version = "1.95"
+license = "MIT"
+repository = "https://github.com/gridness/cargo-cleaner"
+version = "0.1.0"
+
+[workspace.dependencies]
+anyhow = "1"
+clap = { version = "4.5", features = ["derive"] }
+clap_autocomplete = "0.4.2"
+cleaner-core = { path = "packages/cleaner-core" }
+console = "0.16"
+dialoguer = { version = "0.12", default-features = false }
+dirs = "6"
+eyre = "0.6"
+rayon = "1"
+rustix = { version = "1", features = ["fs", "process"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tempfile = "3"
+walkdir = "2"
+
+[profile.release]
+opt-level = "s"
+lto = "thin"
+strip = true
+panic = "abort"

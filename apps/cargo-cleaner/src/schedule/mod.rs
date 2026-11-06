@@ -86,6 +86,10 @@ struct Job {
     scope: Scope,
 }
 
+pub fn check_crontab() -> Result<()> {
+    Cron::read().map(|_| ())
+}
+
 pub fn run(ui: &Ui, action: Action) -> Result<bool> {
     match action {
         Action::Create { time, all, project } => create(ui, &time.join(" "), all, project),

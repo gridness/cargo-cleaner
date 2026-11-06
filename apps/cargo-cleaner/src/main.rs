@@ -1,7 +1,12 @@
 #![forbid(unsafe_code)]
 
+mod doctor;
+mod git;
+mod hooks;
+mod managed;
 mod projects;
 mod schedule;
+mod skill;
 mod ui;
 
 use clap::{
@@ -44,6 +49,14 @@ enum Task {
     /// Manage recurring cleanup jobs
     #[command(subcommand)]
     Schedule(schedule::Action),
+    /// Run cleanup after Git events or a command
+    #[command(subcommand)]
+    Hooks(hooks::Action),
+    /// Install or remove the cargo-cleaner agent skill
+    #[command(subcommand)]
+    Skill(skill::Action),
+    /// Check Cargo, scheduling, hooks, and agent skills
+    Doctor,
 }
 
 fn version() -> &'static str {
@@ -62,7 +75,7 @@ fn long_flags(command: Command) -> Command {
         .mut_subcommands(long_flags)
 }
 
-fn run() -> Result<bool> {
+fn run() -> Result<ExitCode> {
     let command =
         clap_autocomplete::add_subcommand(Cli::command()).mut_subcommand("complete", |command| {
             command
@@ -89,15 +102,23 @@ fn run() -> Result<bool> {
     let matches = command.clone().get_matches();
     if let Some(result) = clap_autocomplete::test_subcommand(&matches, command) {
         result.map_err(|error| eyre!("{error}"))?;
-        return Ok(true);
+        return Ok(ExitCode::SUCCESS);
     }
     let cli = Cli::from_arg_matches(&matches)?;
     let ui = Ui::new(cli.json);
-    match cli.command {
+    let success = match cli.command {
         Task::Scan { path } => projects::scan(&ui, path),
         Task::Clean { project, dry_run } => projects::clean(&ui, &project, dry_run),
         Task::Schedule(action) => schedule::run(&ui, action),
-    }
+        Task::Hooks(action) => return hooks::run(&ui, action),
+        Task::Skill(action) => skill::run(&ui, action),
+        Task::Doctor => doctor::run(&ui),
+    }?;
+    Ok(if success {
+        ExitCode::SUCCESS
+    } else {
+        ExitCode::FAILURE
+    })
 }
 
 fn main() -> ExitCode {
@@ -106,8 +127,7 @@ fn main() -> ExitCode {
         console::set_colors_enabled_stderr(false);
     }
     match run() {
-        Ok(true) => ExitCode::SUCCESS,
-        Ok(false) => ExitCode::FAILURE,
+        Ok(code) => code,
         Err(error) => {
             Ui::error(&ui::safe(&error.to_string()));
             ExitCode::FAILURE

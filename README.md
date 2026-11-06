@@ -44,3 +44,7 @@ Use `HH:MM` for a daily run, `daily at HH:MM`, `every <weekday> at HH:MM`, or `h
 `--all` scans the system at each run. `--project` saves the chosen workspace paths. With a terminal, omitting both opens the project picker. Use the arrow keys to move and Space to toggle projects. For scripts, pass the time and scope explicitly.
 
 `stop` disables future runs and keeps the schedule. `remove` also deletes the saved entry. With one schedule, you can omit its ID. A cleanup already in progress can finish.
+
+## Releases
+
+The release workflow builds on `main`, bumps the patch version, and publishes a tag with GitHub-generated notes and archives for macOS and Linux on Intel and ARM. Set a higher base version in the workspace manifest to start a new version line. The Homebrew tap checks published releases and updates its formula using the archive checksums from GitHub.

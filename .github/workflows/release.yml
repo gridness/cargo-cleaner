@@ -8,6 +8,7 @@ on:
       - "packages/**"
       - "Cargo.toml"
       - "Cargo.lock"
+      - "scripts/update-homebrew-formula.py"
       - ".github/workflows/release.yml"
   workflow_dispatch:
 
@@ -160,12 +161,14 @@ jobs:
         run: |
           set -euo pipefail
           # A separate tag reserves the version if publishing needs to be retried.
-          tag_sha="$(gh api "repos/$GH_REPO/commits/$TAG" --jq '.sha' 2>/dev/null || true)"
-          if [[ -z "$tag_sha" ]]; then
+          if tag_sha="$(gh api "repos/$GH_REPO/commits/$TAG" --jq '.sha' 2>/dev/null)"; then
+            if [[ "$tag_sha" != "$GITHUB_SHA" ]]; then
+              echo "::error::Tag $TAG points to $tag_sha, expected $GITHUB_SHA."
+              exit 1
+            fi
+          else
             gh api --method POST "repos/$GH_REPO/git/refs" \
               -f "ref=refs/tags/$TAG" -f "sha=$GITHUB_SHA" >/dev/null
-          else
-            test "$tag_sha" = "$GITHUB_SHA"
           fi
           draft="$(gh release view "$TAG" --json isDraft --jq '.isDraft' 2>/dev/null || true)"
           case "$draft" in
@@ -176,3 +179,59 @@ jobs:
             false) ;;
             *) gh release create "$TAG" dist/*.tar.gz --verify-tag --generate-notes ;;
           esac
+
+  homebrew:
+    needs: [version, publish]
+    if: >-
+      ${{ !cancelled() && needs.version.result == 'success' &&
+          (needs.publish.result == 'success' || needs.version.outputs.publish == 'false') }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Check tap credentials
+        env:
+          HOMEBREW_TAP_DEPLOY_KEY: ${{ secrets.HOMEBREW_TAP_DEPLOY_KEY }}
+        run: |
+          if [[ -z "$HOMEBREW_TAP_DEPLOY_KEY" ]]; then
+            echo "::error::Set the HOMEBREW_TAP_DEPLOY_KEY repository secret to push the formula."
+            exit 1
+          fi
+
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+
+      - name: Check out Homebrew tap
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          repository: gridness/homebrew-oosama
+          ref: main
+          path: tap
+          ssh-key: ${{ secrets.HOMEBREW_TAP_DEPLOY_KEY }}
+
+      - name: Push the formula to the tap
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.version.outputs.tag }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          release="$RUNNER_TEMP/cargo-cleaner-release.json"
+          gh api "repos/$GITHUB_REPOSITORY/releases/latest" > "$release"
+          if [[ "$(jq -r .tag_name "$release")" != "$TAG" ]]; then
+            echo "A newer release is already available."
+            exit 0
+          fi
+          formula="$RUNNER_TEMP/cargo-cleaner.rb"
+          python3 scripts/update-homebrew-formula.py < "$release" > "$formula"
+          ruby -c "$formula"
+          cp "$formula" tap/Formula/cargo-cleaner.rb
+          git -C tap add -- Formula/cargo-cleaner.rb
+          if git -C tap diff --cached --quiet; then
+            exit 0
+          fi
+          git -C tap -c user.name='github-actions[bot]' \
+            -c user.email='41898282+github-actions[bot]@users.noreply.github.com' \
+            commit -m "Updated cargo-cleaner to ${TAG#v}"
+          git -C tap pull --rebase origin main
+          git -C tap push origin HEAD:main

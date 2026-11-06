@@ -47,4 +47,4 @@ Use `HH:MM` for a daily run, `daily at HH:MM`, `every <weekday> at HH:MM`, or `h
 
 ## Releases
 
-The release workflow builds on `main`, bumps the patch version, and publishes a tag with GitHub-generated notes and archives for macOS and Linux on Intel and ARM. Set a higher base version in the workspace manifest to start a new version line. The Homebrew tap checks published releases and updates its formula using the archive checksums from GitHub.
+The release workflow builds on `main`, bumps the patch version, and publishes a tag with GitHub-generated notes and archives for macOS and Linux on Intel and ARM. Set a higher base version in the workspace manifest to start a new version line. After publishing, the same workflow generates the Homebrew formula from the release checksums and pushes it to `gridness/homebrew-oosama`. The `HOMEBREW_TAP_DEPLOY_KEY` Actions secret holds the write deploy key for that tap.

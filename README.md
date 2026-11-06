@@ -45,6 +45,38 @@ Use `HH:MM` for a daily run, `daily at HH:MM`, `every <weekday> at HH:MM`, or `h
 
 `stop` disables future runs and keeps the schedule. `remove` also deletes the saved entry. With one schedule, you can omit its ID. A cleanup already in progress can finish.
 
+## Hooks
+
+```sh
+cargo-cleaner hooks create --git post-merge
+cargo-cleaner hooks list
+cargo-cleaner hooks remove --git post-merge
+cargo-cleaner hooks run -- cargo test --workspace
+```
+
+Git hooks clean the worktree after a merge or a branch checkout. Choose `post-merge` or `post-checkout` with `--git`, or use the picker in a terminal. Hooks live in Git's default hooks directory, which linked worktrees share. Git needs `cargo-cleaner` on its PATH. If your repo already uses a hook or a custom `core.hooksPath`, add `cargo-cleaner clean .` to the hook you manage.
+
+`hooks run` runs the given program and cleans the current folder tree after it succeeds. If the program fails, cleanup is skipped and the wrapper returns its exit status. With `--json`, the program's stdout goes to stderr so stdout carries the cleanup result.
+
+## Agent skill
+
+```sh
+cargo-cleaner skill install
+cargo-cleaner skill install --local --harness codex claude --add-agents-entry --yes
+cargo-cleaner skill remove --harness pi
+cargo-cleaner skill remove --local --remove-agents-entry
+```
+
+Installation defaults to user scope. With no harness specified, the installer checks for known harness directories and executables. It falls back to `.agents/skills` if it finds none. Run `cargo-cleaner skill install --help` for the harness list. Use `--skills-dir` with an existing directory for a custom layout.
+
+`--local` installs at the Git worktree root or in the current directory outside Git. In a terminal it offers to add a one-line pointer to `AGENTS.md`. Use `--add-agents-entry` or `--yes` to add it from a script. Shared destinations receive one copy.
+
+Removal without `--harness` finds copies in known directories for the selected scope. Removal matches the bundled skill, so edits to the file stay on disk. `--remove-agents-entry` also removes the managed pointer from the current project.
+
+## Doctor
+
+Run `cargo-cleaner doctor` to check Cargo, Git, crontab access, and installed hooks and skills. It skips the disk scan and supports `--json`. Missing Cargo makes the command exit with an error. Optional integrations report warnings.
+
 ## Releases
 
 The release workflow builds on `main`, bumps the patch version, and publishes a tag with GitHub-generated notes and archives for macOS and Linux on Intel and ARM. Set a higher base version in the workspace manifest to start a new version line. After publishing, the same workflow generates the Homebrew formula from the release checksums and pushes it to `gridness/homebrew-oosama`. The `HOMEBREW_TAP_DEPLOY_KEY` Actions secret holds the write deploy key for that tap.

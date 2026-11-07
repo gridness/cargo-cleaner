@@ -35,6 +35,8 @@ cargo-cleaner schedule create "daily at 02:30" --all
 cargo-cleaner schedule create every Sunday at 02:30 --project my-project --project ./another
 cargo-cleaner schedule create
 cargo-cleaner schedule list --json
+cargo-cleaner schedule logs --id JOB_ID
+cargo-cleaner schedule logs --json
 cargo-cleaner schedule stop --id JOB_ID
 cargo-cleaner schedule remove --all
 ```
@@ -44,6 +46,10 @@ Use `HH:MM` for a daily run, `daily at HH:MM`, `every <weekday> at HH:MM`, or `h
 `--all` scans the system at each run. `--project` saves the chosen workspace paths. With a terminal, omitting both opens the project picker. Use the arrow keys to move and Space to toggle projects. For scripts, pass the time and scope explicitly.
 
 `stop` disables future runs and keeps the schedule. `remove` also deletes the saved entry. With one schedule, you can omit its ID. A cleanup already in progress can finish.
+
+`logs` shows the latest 20 runs, newest first, with status, duration, cleanup output, and errors. Omit `--id` to use the only schedule or choose one in a terminal. Scripts with multiple schedules must pass `--id`; the error lists the available choices. Logs start with the next scheduled run after upgrading. A run without a finish record appears as running or interrupted.
+
+Logs stay in the private cargo-cleaner state folder alongside saved schedules. Each run retains up to 64 KiB each of stdout and stderr, with a truncation notice when needed. Stopping a schedule keeps its history; removing it deletes its history. `--json` returns the schedule ID and runs, with UTC timestamps in Unix seconds and durations in milliseconds.
 
 ## Hooks
 

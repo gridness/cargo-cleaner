@@ -227,12 +227,12 @@ fn clean_inventory(
             summary.total_bytes = summary.total_bytes.saturating_add(cache.bytes);
             if !ui.json {
                 let verb = if dry_run { "Would clean" } else { "Cleaned" };
-                println!(
+                ui.line(format!(
                     "{}  {}  {}",
                     console::style(verb).green(),
                     ui::size(cache.bytes),
                     ui::path(&cache.path)
-                );
+                ))?;
             }
         }
         summary.caches.push(Outcome {
@@ -247,11 +247,14 @@ fn clean_inventory(
     } else {
         report_skips(ui, &inventory);
         if summary.caches.is_empty() {
-            println!("No Cargo build caches to clean.");
+            ui.line("No Cargo build caches to clean.")?;
         } else if dry_run {
-            println!("{} could be freed.", ui::size(summary.total_bytes));
+            ui.line(format!("{} could be freed.", ui::size(summary.total_bytes)))?;
         } else {
-            println!("{} of build files cleaned.", ui::size(summary.total_bytes));
+            ui.line(format!(
+                "{} of build files cleaned.",
+                ui::size(summary.total_bytes)
+            ))?;
         }
     }
     Ok(success && (inventory.unreadable_manifests == 0 || project.is_some()))

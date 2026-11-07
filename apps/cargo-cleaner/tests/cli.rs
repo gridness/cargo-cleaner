@@ -199,7 +199,14 @@ fn explains_skipped_manifests_from_saved_results_without_rescanning() {
     fs::create_dir(&broken).unwrap();
     fs::write(broken.join("Cargo.toml"), "[package\ninvalid").unwrap();
 
-    let scan = json(&cli(&root, &root, &["scan", "--path", ".", "--json"]), true);
+    let scan = json(
+        &isolated(env!("CARGO_BIN_EXE_cargo-cleaner"), &root, &root)
+            .env("CARGO_TERM_COLOR", "always")
+            .args(["scan", "--path", ".", "--json"])
+            .output()
+            .unwrap(),
+        true,
+    );
     assert_eq!(scan["unreadable_manifests"], 1);
     assert_eq!(
         scan["issues"][0]["path"],

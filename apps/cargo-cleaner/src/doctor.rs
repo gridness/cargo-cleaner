@@ -84,6 +84,12 @@ pub fn run(ui: &Ui) -> Result<bool> {
     ];
 
     let success = checks.iter().all(|check| check.status != "error");
+    for check in &checks {
+        ui.explain(
+            None,
+            format!("{}: {}. {}", check.name, check.status, check.detail),
+        );
+    }
     if ui.json {
         ui.json(&checks)?;
     } else {

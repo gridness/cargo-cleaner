@@ -27,11 +27,36 @@ pub struct Project {
 }
 
 #[derive(Debug, Serialize)]
+pub struct ScanIssue {
+    pub path: Option<PathBuf>,
+    pub reason: String,
+    pub kind: &'static str,
+}
+
+fn record_issue(
+    issues: &mut Vec<ScanIssue>,
+    path: Option<&Path>,
+    kind: &'static str,
+    reason: String,
+) {
+    // Keep exact counters and sample both kinds, even if filesystem errors fill
+    // their budget before Cargo reads any manifests.
+    if issues.iter().filter(|issue| issue.kind == kind).count() < 100 {
+        issues.push(ScanIssue {
+            path: path.map(Path::to_owned),
+            reason,
+            kind,
+        });
+    }
+}
+
+#[derive(Debug, Serialize)]
 pub struct Inventory {
     pub projects: Vec<Project>,
     pub caches: Vec<Cache>,
     pub unreadable_entries: usize,
     pub unreadable_manifests: usize,
+    pub issues: Vec<ScanIssue>,
 }
 
 impl Inventory {
@@ -44,6 +69,7 @@ impl Inventory {
 
 pub fn scan(cargo: &Cargo, scope: &Roots) -> Result<Inventory> {
     let mut unreadable_entries = 0;
+    let mut issues = Vec::new();
     let mut manifests = Vec::new();
     let directory = match scope {
         Roots::Directory(path) => Some(
@@ -63,6 +89,12 @@ pub fn scan(cargo: &Cargo, scope: &Roots) -> Result<Inventory> {
                     manifests.push(path.join("Cargo.toml"));
                 } else {
                     unreadable_entries += 1;
+                    record_issue(
+                        &mut issues,
+                        Some(path),
+                        "entry",
+                        "The saved project folder is missing, inaccessible, or now goes through a link".to_owned(),
+                    );
                 }
             }
         }
@@ -82,7 +114,10 @@ pub fn scan(cargo: &Cargo, scope: &Roots) -> Result<Inventory> {
                         manifests.push(entry.into_path());
                     }
                     Ok(_) => {}
-                    Err(_) => unreadable_entries += 1,
+                    Err(error) => {
+                        unreadable_entries += 1;
+                        record_issue(&mut issues, error.path(), "entry", error.to_string());
+                    }
                 }
             }
         }
@@ -102,14 +137,32 @@ pub fn scan(cargo: &Cargo, scope: &Roots) -> Result<Inventory> {
     });
     let mut unreadable_manifests = 0;
     let mut workspaces = BTreeMap::<PathBuf, BTreeSet<PathBuf>>::new();
-    for report in reports {
-        let Ok(report) = report else {
-            unreadable_manifests += 1;
-            continue;
+    for (manifest, report) in manifests.iter().zip(reports) {
+        let report = match report {
+            Ok(report) => report,
+            Err(error) => {
+                unreadable_manifests += 1;
+                record_issue(
+                    &mut issues,
+                    Some(manifest),
+                    "manifest",
+                    format!("{error:#}"),
+                );
+                continue;
+            }
         };
-        let Ok(workspace) = report.workspace_root.canonicalize() else {
-            unreadable_manifests += 1;
-            continue;
+        let workspace = match report.workspace_root.canonicalize() {
+            Ok(workspace) => workspace,
+            Err(error) => {
+                unreadable_manifests += 1;
+                record_issue(
+                    &mut issues,
+                    Some(manifest),
+                    "manifest",
+                    format!("Could not open the workspace folder: {error}"),
+                );
+                continue;
+            }
         };
         if directory
             .as_ref()
@@ -119,6 +172,13 @@ pub fn scan(cargo: &Cargo, scope: &Roots) -> Result<Inventory> {
         }
         if matches!(scope, Roots::Projects(paths) if !paths.contains(&workspace)) {
             unreadable_manifests += 1;
+            record_issue(
+                &mut issues,
+                Some(manifest),
+                "manifest",
+                "This manifest belongs to a different workspace than the selected project"
+                    .to_owned(),
+            );
             continue;
         }
         let caches = workspaces.entry(workspace).or_default();
@@ -161,6 +221,7 @@ pub fn scan(cargo: &Cargo, scope: &Roots) -> Result<Inventory> {
         caches,
         unreadable_entries,
         unreadable_manifests,
+        issues,
     })
 }
 

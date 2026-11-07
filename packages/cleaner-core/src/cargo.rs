@@ -111,7 +111,12 @@ impl Cargo {
             .context("Could not start Cargo")?;
         ensure!(
             output.status.success(),
-            "Cargo could not read the manifest or its configuration"
+            "Cargo could not read the manifest or its configuration: {}",
+            String::from_utf8_lossy(&output.stderr)
+                .chars()
+                .take(2048)
+                .collect::<String>()
+                .trim()
         );
         serde_json::from_slice(&output.stdout).context("Cargo returned invalid project information")
     }

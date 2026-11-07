@@ -28,6 +28,18 @@ cargo-cleaner clean ./my-project
 
 Cleanup uses Cargo's reported target and build directories and requires a valid cache marker and safe permissions. It skips symlinked cache paths, mounts, and cache paths that contain a discovered workspace or another cache. A shared cache is cleaned as a unit. Use `--json` for machine-readable results. Cleanup returns a nonzero exit status if a selected cache fails or is skipped for safety.
 
+## Explain a result
+
+```sh
+cargo-cleaner clean .
+cargo-cleaner explain
+cargo-cleaner explain --json
+```
+
+`explain` describes the previous command's result in plain language, including why folders, Cargo manifests, or caches were skipped and what to check next. It uses the saved result without scanning or cleaning again. For unreadable manifests, it includes Cargo's reported project or configuration error.
+
+Only the latest command's explanation is kept in the private cargo-cleaner state folder. Explanations begin with this version, so commands run before upgrading have no saved result. Running `explain`, requesting help or completions, and scheduled background runs keep the saved result. Scheduled output remains available through `schedule logs`. Reports retain up to 200 details and 1 MiB and say when details were omitted. The scanner samples up to 100 filesystem errors and 100 manifest errors separately, so unreadable folders cannot hide all the project errors.
+
 ## Schedule
 
 ```sh

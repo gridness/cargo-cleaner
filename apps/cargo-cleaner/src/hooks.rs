@@ -243,6 +243,7 @@ fn after(ui: &Ui, args: &[OsString]) -> Result<ExitCode> {
         let code = status
             .code()
             .unwrap_or_else(|| 128 + status.signal().unwrap_or(0));
+        ui.explain(None, format!("The wrapped command exited with status {code}. Cleanup was skipped because it only runs after a successful command."));
         if ui.json {
             ui.json(&serde_json::json!({ "command_exit_code": code, "cleanup": "skipped" }))?;
         }

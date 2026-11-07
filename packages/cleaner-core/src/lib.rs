@@ -6,4 +6,4 @@ mod scan;
 
 pub use cache::{Cache, Cleaner};
 pub use cargo::Cargo;
-pub use scan::{Inventory, Project, Roots, scan};
+pub use scan::{Inventory, Project, Roots, ScanIssue, scan};

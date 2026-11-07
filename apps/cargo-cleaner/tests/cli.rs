@@ -192,6 +192,242 @@ fn prints_completions_and_rejects_short_flags() {
 }
 
 #[test]
+fn explains_skipped_manifests_from_saved_results_without_rescanning() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path().canonicalize().unwrap();
+    let broken = root.join("broken\u{1b}[2J\nproject");
+    fs::create_dir(&broken).unwrap();
+    fs::write(broken.join("Cargo.toml"), "[package\ninvalid").unwrap();
+
+    let scan = json(&cli(&root, &root, &["scan", "--path", ".", "--json"]), true);
+    assert_eq!(scan["unreadable_manifests"], 1);
+    assert_eq!(
+        scan["issues"][0]["path"],
+        broken.join("Cargo.toml").to_str().unwrap()
+    );
+    assert!(
+        scan["issues"][0]["reason"]
+            .as_str()
+            .unwrap()
+            .contains("error:")
+    );
+    fs::remove_dir_all(&broken).unwrap();
+
+    let first = json(&cli(&root, &root, &["explain", "--json"]), true);
+    assert_eq!(first["command"], "cargo-cleaner scan");
+    let entries = first["entries"].to_string();
+    assert!(entries.contains("Cargo.toml"));
+    assert!(entries.contains("error:"));
+    assert!(entries.contains("Skipped 1 Cargo manifest."));
+    let text = cli(&root, &root, &["explain"]);
+    assert!(text.status.success());
+    let text = String::from_utf8(text.stdout).unwrap();
+    assert!(!text.contains('\u{1b}'));
+    assert!(text.contains("\\u{1b}[2J\\nproject"));
+    assert!(cli(&root, &root, &["--help"]).status.success());
+    assert!(
+        cli(&root, &root, &["complete", "--shell", "zsh"])
+            .status
+            .success()
+    );
+    let again = json(&cli(&root, &root, &["explain", "--json"]), true);
+    assert_eq!(first, again);
+}
+
+#[test]
+fn explains_cleanup_safety_dry_runs_and_the_latest_failure() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path().canonicalize().unwrap();
+    let workspace = root.join("workspace");
+    project(&workspace);
+    fs::create_dir(workspace.join("target")).unwrap();
+    fs::write(workspace.join("target/notes"), "keep me").unwrap();
+    json(&cli(&workspace, &root, &["clean", ".", "--json"]), false);
+    let report = json(&cli(&root, &root, &["explain", "--json"]), true);
+    assert_eq!(report["command"], "cargo-cleaner clean");
+    assert_eq!(report["success"], false);
+    assert!(
+        report["entries"]
+            .to_string()
+            .contains("Do not add a cache marker")
+    );
+    assert_eq!(
+        fs::read_to_string(workspace.join("target/notes")).unwrap(),
+        "keep me"
+    );
+
+    cache(&workspace.join("target"));
+    json(
+        &cli(&workspace, &root, &["clean", ".", "--dry-run", "--json"]),
+        true,
+    );
+    let report = json(&cli(&root, &root, &["explain", "--json"]), true);
+    assert!(
+        report["entries"]
+            .to_string()
+            .contains("dry run did not delete")
+    );
+    assert!(workspace.join("target/artifact").is_file());
+
+    json(&cli(&workspace, &root, &["clean", ".", "--json"]), true);
+    let report = json(&cli(&root, &root, &["explain", "--json"]), true);
+    assert!(
+        report["entries"]
+            .to_string()
+            .contains("Project sources were kept")
+    );
+    assert!(workspace.join("src/lib.rs").is_file());
+
+    let failure = cli(&root, &root, &["scan", "--path", "missing", "--json"]);
+    assert!(!failure.status.success());
+    assert!(failure.stdout.is_empty());
+    let report = json(&cli(&root, &root, &["explain", "--json"]), true);
+    assert_eq!(report["command"], "cargo-cleaner scan");
+    assert_eq!(report["success"], false);
+    assert!(
+        report["entries"]
+            .to_string()
+            .contains("Could not open the scan folder")
+    );
+}
+
+#[test]
+fn explains_unreadable_folders_and_empty_cleanup() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path().canonicalize().unwrap();
+    let locked = root.join("locked");
+    fs::create_dir(&locked).unwrap();
+    fs::set_permissions(&locked, fs::Permissions::from_mode(0o0)).unwrap();
+    let result = cli(&root, &root, &["clean", ".", "--json"]);
+    fs::set_permissions(&locked, fs::Permissions::from_mode(0o700)).unwrap();
+    let result = json(&result, false);
+    assert_eq!(result["unreadable_entries"], 1);
+    let report = json(&cli(&root, &root, &["explain", "--json"]), true);
+    let entries = report["entries"].to_string();
+    assert!(entries.contains("Permission denied"));
+    assert!(entries.contains(locked.to_str().unwrap()));
+    assert!(entries.contains("No readable Cargo workspaces were found"));
+}
+
+#[test]
+fn explanation_state_is_private_bounded_and_kept_separate_from_schedules() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path().canonicalize().unwrap();
+    assert_eq!(
+        json(&cli(&root, &root, &["explain", "--json"]), true),
+        Value::Null
+    );
+    assert!(
+        String::from_utf8(cli(&root, &root, &["explain"]).stdout)
+            .unwrap()
+            .contains("No previous command")
+    );
+    json(&cli(&root, &root, &["scan", "--path", ".", "--json"]), true);
+    let before = json(&cli(&root, &root, &["explain", "--json"]), true);
+    let state = if cfg!(target_os = "macos") {
+        root.join("Library/Application Support/cargo-cleaner")
+    } else {
+        root.join("cargo-cleaner")
+    };
+    let report = state.join("last-command.report");
+    assert_eq!(
+        fs::metadata(&report).unwrap().permissions().mode() & 0o777,
+        0o600
+    );
+    let _scheduled = cli(
+        &root,
+        &root,
+        &[
+            "schedule",
+            "run",
+            "invalid",
+            "--state",
+            state.to_str().unwrap(),
+        ],
+    );
+    assert_eq!(
+        json(&cli(&root, &root, &["explain", "--json"]), true),
+        before
+    );
+    assert_eq!(
+        json(&cli(&root, &root, &["schedule", "list", "--json"]), true),
+        serde_json::json!([])
+    );
+
+    fs::write(&report, "x".repeat(1024 * 1024 + 1)).unwrap();
+    assert!(!cli(&root, &root, &["explain"]).status.success());
+    fs::write(&report, "invalid json").unwrap();
+    assert!(!cli(&root, &root, &["explain"]).status.success());
+    fs::remove_file(&report).unwrap();
+    let outside = root.join("untouched");
+    fs::write(&outside, "keep").unwrap();
+    symlink(&outside, &report).unwrap();
+    assert!(!cli(&root, &root, &["explain"]).status.success());
+    json(&cli(&root, &root, &["scan", "--path", ".", "--json"]), true);
+    assert!(!report.is_symlink());
+    assert_eq!(fs::read_to_string(outside).unwrap(), "keep");
+}
+
+#[test]
+fn bounds_skip_samples_without_losing_counts() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path().canonicalize().unwrap();
+    fs::write(root.join("Cargo.toml"), "[package\ninvalid").unwrap();
+    let paths = (0..105)
+        .map(|i| root.join(format!("locked-{i}")))
+        .collect::<Vec<_>>();
+    for path in &paths {
+        fs::create_dir(path).unwrap();
+        fs::set_permissions(path, fs::Permissions::from_mode(0o0)).unwrap();
+    }
+    let result = cli(&root, &root, &["scan", "--path", ".", "--json"]);
+    for path in &paths {
+        fs::set_permissions(path, fs::Permissions::from_mode(0o700)).unwrap();
+    }
+    let result = json(&result, true);
+    assert_eq!(result["unreadable_entries"], 105);
+    assert_eq!(result["unreadable_manifests"], 1);
+    assert_eq!(result["issues"].as_array().unwrap().len(), 101);
+    let report = json(&cli(&root, &root, &["explain", "--json"]), true);
+    assert_eq!(report["omitted"], 5);
+    assert!(report["entries"].to_string().contains("unclosed table"));
+    assert!(
+        report["entries"]
+            .to_string()
+            .contains("Skipped 105 filesystem entries")
+    );
+    let text = cli(&root, &root, &["explain"]);
+    assert!(
+        String::from_utf8(text.stdout)
+            .unwrap()
+            .contains("5 more details were omitted")
+    );
+}
+
+#[test]
+fn saving_an_explanation_never_changes_command_status_or_json() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path().canonicalize().unwrap();
+    let state = if cfg!(target_os = "macos") {
+        root.join("Library/Application Support/cargo-cleaner")
+    } else {
+        root.join("cargo-cleaner")
+    };
+    fs::create_dir_all(state.parent().unwrap()).unwrap();
+    let outside = root.join("outside-state");
+    fs::create_dir(&outside).unwrap();
+    symlink(&outside, &state).unwrap();
+    let result = cli(&root, &root, &["scan", "--path", ".", "--json"]);
+    assert_eq!(json(&result, true)["projects"], serde_json::json!([]));
+    assert!(
+        String::from_utf8(result.stderr)
+            .unwrap()
+            .contains("Could not save the explanation")
+    );
+    assert!(fs::read_dir(outside).unwrap().next().is_none());
+}
+
+#[test]
 fn schedule_logs_selects_saved_jobs_and_keeps_json_and_terminal_output_safe() {
     let temp = tempfile::tempdir().unwrap();
     let root = temp.path().canonicalize().unwrap();

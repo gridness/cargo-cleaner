@@ -21,7 +21,30 @@ fn inventory(cargo: &Cargo, roots: &Roots) -> Result<Inventory> {
 
 pub fn scan(ui: &Ui, path: Option<PathBuf>) -> Result<bool> {
     let roots = path.map_or(Roots::System, Roots::Directory);
+    explain_scope(ui, &roots);
     let inventory = inventory(&cargo()?, &roots)?;
+    explain_inventory(ui, &inventory);
+    ui.explain(
+        None,
+        format!(
+            "Found {} Cargo workspaces with {} in build caches. Shared caches are counted once.",
+            inventory.projects.len(),
+            ui::size(inventory.bytes())
+        ),
+    );
+    for cache in &inventory.caches {
+        if let Some(issue) = &cache.issue {
+            ui.explain(
+                Some(&cache.path),
+                format!(
+                    "Left this cache alone for safety. {issue}. {}",
+                    cache_advice(issue)
+                ),
+            );
+        } else if !cache.cleanable() {
+            ui.explain(Some(&cache.path), "There is no build cache at this path. The project may not have been built yet, or its cache was already cleaned.");
+        }
+    }
     if ui.json {
         #[derive(Serialize)]
         struct Output<'a> {
@@ -68,7 +91,7 @@ pub fn scan(ui: &Ui, path: Option<PathBuf>) -> Result<bool> {
     );
     for cache in &inventory.caches {
         if let Some(issue) = &cache.issue {
-            ui.warn(&format!("{} ({issue})", ui::path(&cache.path)));
+            ui.warn(&format!("{} ({})", ui::path(&cache.path), ui::safe(issue)));
         }
     }
     report_skips(ui, &inventory);
@@ -114,6 +137,12 @@ pub fn listing() -> Result<Inventory> {
 }
 
 pub fn clean(ui: &Ui, project: &Path, dry_run: bool) -> Result<bool> {
+    if dry_run {
+        ui.explain(
+            None,
+            "This was a dry run. It checked what could be cleaned without deleting any files.",
+        );
+    }
     let roots = match project.to_str() {
         Some(".") => {
             Roots::Directory(fs::canonicalize(".").wrap_err("Could not open the current folder")?)
@@ -121,6 +150,10 @@ pub fn clean(ui: &Ui, project: &Path, dry_run: bool) -> Result<bool> {
         Some("all") => Roots::System,
         _ if explicit_path(project) => Roots::Projects(vec![workspace_for_path(project)?]),
         _ => {
+            ui.explain(
+                Some(project),
+                "Searched readable system folders for a workspace with this project name.",
+            );
             let listing = listing()?;
             let path = project_path(ui, &listing, project)?;
             return clean_inventory(ui, &cargo()?, listing, Some(&path), None, dry_run, None);
@@ -130,6 +163,7 @@ pub fn clean(ui: &Ui, project: &Path, dry_run: bool) -> Result<bool> {
 }
 
 pub fn clean_roots(ui: &Ui, roots: &Roots, dry_run: bool, store: Option<&Store>) -> Result<bool> {
+    explain_scope(ui, roots);
     let cargo = cargo()?;
     let listing = inventory(&cargo, roots)?;
     let strict = !matches!(roots, Roots::System);
@@ -151,6 +185,7 @@ fn clean_inventory(
     dry_run: bool,
     store: Option<&Store>,
 ) -> Result<bool> {
+    explain_inventory(ui, &inventory);
     #[derive(Serialize)]
     struct Outcome<'a> {
         path: &'a Path,
@@ -195,6 +230,7 @@ fn clean_inventory(
         let (status, issue) = if let Some(issue) = &cache.issue {
             ("skipped", Some(issue.clone()))
         } else if !cache.cleanable() {
+            ui.explain(Some(&cache.path), "There is no build cache at this path. The project may not have been built yet, or its cache was already cleaned.");
             continue;
         } else if directory.is_some_and(|root| !cache.path.starts_with(root)) {
             (
@@ -216,14 +252,29 @@ fn clean_inventory(
                 .clean(cache)
             {
                 Ok(true) => ("cleaned", None),
-                Ok(false) => continue,
+                Ok(false) => {
+                    ui.explain(
+                        Some(&cache.path),
+                        "This cache disappeared before cleanup, so nothing needed to be deleted.",
+                    );
+                    continue;
+                }
                 Err(error) => ("failed", Some(error.to_string())),
             }
         };
         if let Some(issue) = &issue {
+            ui.explain(
+                Some(&cache.path),
+                format!("The cache was {status}. {issue}. {}", cache_advice(issue)),
+            );
             ui.warn(&format!("{} ({})", ui::path(&cache.path), ui::safe(issue)));
             success = false;
         } else {
+            ui.explain(Some(&cache.path), if dry_run {
+                format!("This verified Cargo cache could free {}. The dry run did not delete any files.", ui::size(cache.bytes))
+            } else {
+                format!("Cleaned {} of Cargo build files. Project sources were kept.", ui::size(cache.bytes))
+            });
             summary.total_bytes = summary.total_bytes.saturating_add(cache.bytes);
             if !ui.json {
                 let verb = if dry_run { "Would clean" } else { "Cleaned" };
@@ -242,6 +293,13 @@ fn clean_inventory(
             issue,
         });
     }
+    if summary.caches.is_empty() {
+        ui.explain(None, if inventory.projects.is_empty() {
+            "No readable Cargo workspaces were found in the search area, so there were no build caches to clean. Any skipped folders or manifests may contain projects that could not be checked."
+        } else {
+            "The selected projects had no build caches left to clean. They may not have been built yet, or their caches were already cleaned."
+        });
+    }
     if ui.json {
         ui.json(&summary)?;
     } else {
@@ -258,6 +316,67 @@ fn clean_inventory(
         }
     }
     Ok(success && (inventory.unreadable_manifests == 0 || project.is_some()))
+}
+
+fn explain_scope(ui: &Ui, roots: &Roots) {
+    match roots {
+        Roots::System => ui.explain(None, "Searched readable system folders. System directories, version control folders, dependency caches, and verified target caches are excluded from project discovery. Links are not followed. Permission-denied folders are common during a system scan."),
+        Roots::Directory(path) => ui.explain(Some(path), "Searched this folder and its subfolders. Only build caches inside this folder can be cleaned. Links are not followed."),
+        Roots::Projects(paths) => {
+            for path in paths {
+                ui.explain(Some(path), "Checked this selected Cargo workspace and its configured build caches.");
+            }
+        }
+    }
+}
+
+fn explain_inventory(ui: &Ui, inventory: &Inventory) {
+    if inventory.unreadable_entries > 0 {
+        ui.explain(None, format!("Skipped {} filesystem entries because they could not be opened or checked. The operating system's reasons are listed below. If a skipped folder contains your projects, check your account's access to it and scan that folder with --path. You do not need to change access to unrelated system folders.", inventory.unreadable_entries));
+    }
+    if inventory.unreadable_manifests > 0 {
+        ui.explain(None, format!("Skipped {} Cargo {}. A manifest is a project's Cargo.toml file. Cargo could not read the project information, or the project did not pass the ownership and workspace checks. Fix the reported project or configuration error and try again.", inventory.unreadable_manifests, if inventory.unreadable_manifests == 1 { "manifest" } else { "manifests" }));
+    }
+    for issue in &inventory.issues {
+        ui.explain(
+            issue.path.as_deref(),
+            format!(
+                "Skipped {}: {}",
+                if issue.kind == "manifest" {
+                    "Cargo project"
+                } else {
+                    "filesystem entry"
+                },
+                issue.reason
+            ),
+        );
+    }
+    let omitted = inventory
+        .unreadable_entries
+        .saturating_add(inventory.unreadable_manifests)
+        .saturating_sub(inventory.issues.len());
+    if omitted > 0 {
+        ui.explanation.borrow_mut().omit(omitted);
+    }
+}
+
+fn cache_advice(issue: &str) -> &'static str {
+    if issue.contains("marker") {
+        "The folder could contain files that are not disposable build output. Do not add a cache marker just to bypass this check."
+    } else if issue.contains("link") {
+        "Links can lead outside the selected project. Check the project's build directory settings."
+    } else if issue.contains("outside") {
+        "The project's Cargo configuration points outside the selected folder. Use an explicit project path to select that workspace's configured caches."
+    } else if issue.contains("mounted") {
+        "A mounted disk could contain unrelated files, so this cache cannot be cleaned safely."
+    } else if issue.contains("project")
+        || issue.contains("repository")
+        || issue.contains("another cache")
+    {
+        "The folder may contain source files or overlap another cache. Choose a separate build output folder in Cargo's configuration."
+    } else {
+        "Check access to this folder and the project's Cargo configuration before trying again."
+    }
 }
 
 fn report_skips(ui: &Ui, listing: &Inventory) {

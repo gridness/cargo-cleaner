@@ -9,6 +9,7 @@ use std::{
 
 pub struct Ui {
     pub json: bool,
+    pub explanation: RefCell<crate::explain::Details>,
     transcript: Option<RefCell<Transcript>>,
 }
 
@@ -35,6 +36,7 @@ impl Ui {
     pub fn new(json: bool) -> Self {
         Self {
             json,
+            explanation: RefCell::default(),
             transcript: None,
         }
     }
@@ -42,12 +44,17 @@ impl Ui {
     pub fn recording(json: bool) -> Self {
         Self {
             json,
+            explanation: RefCell::default(),
             transcript: Some(RefCell::new(Transcript::default())),
         }
     }
 
     pub fn into_transcript(self) -> Transcript {
         self.transcript.map(RefCell::into_inner).unwrap_or_default()
+    }
+
+    pub fn explain(&self, path: Option<&Path>, message: impl Into<String>) {
+        self.explanation.borrow_mut().push(path, message.into());
     }
 
     fn record(&self, text: &str, stderr: bool) {

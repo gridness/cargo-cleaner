@@ -1,6 +1,7 @@
 #![forbid(unsafe_code)]
 
 mod doctor;
+mod explain;
 mod git;
 mod hooks;
 mod managed;
@@ -57,6 +58,8 @@ enum Task {
     Skill(skill::Action),
     /// Check Cargo, scheduling, hooks, and agent skills
     Doctor,
+    /// Explain the previous command's result and why entries were skipped
+    Explain,
 }
 
 fn version() -> &'static str {
@@ -100,25 +103,57 @@ fn run() -> Result<ExitCode> {
             .action(ArgAction::Version),
     );
     let matches = command.clone().get_matches();
-    if let Some(result) = clap_autocomplete::test_subcommand(&matches, command) {
+    if let Some(result) = clap_autocomplete::test_subcommand(&matches, command.clone()) {
         result.map_err(|error| eyre!("{error}"))?;
         return Ok(ExitCode::SUCCESS);
     }
     let cli = Cli::from_arg_matches(&matches)?;
     let ui = Ui::new(cli.json);
-    let success = match cli.command {
-        Task::Scan { path } => projects::scan(&ui, path),
-        Task::Clean { project, dry_run } => projects::clean(&ui, &project, dry_run),
-        Task::Schedule(action) => schedule::run(&ui, action),
-        Task::Hooks(action) => return hooks::run(&ui, action),
-        Task::Skill(action) => skill::run(&ui, action),
-        Task::Doctor => doctor::run(&ui),
-    }?;
-    Ok(if success {
-        ExitCode::SUCCESS
-    } else {
-        ExitCode::FAILURE
-    })
+    if matches!(cli.command, Task::Explain) {
+        explain::show(&ui)?;
+        return Ok(ExitCode::SUCCESS);
+    }
+    // Scheduled runs have their own logs and must not replace a manual result.
+    let remember = !matches!(cli.command, Task::Schedule(schedule::Action::Run { .. }));
+    let mut command_name = "cargo-cleaner".to_owned();
+    let mut definition = &command;
+    let mut arguments = &matches;
+    while let Some((name, submatches)) = arguments.subcommand() {
+        command_name.push(' ');
+        command_name.push_str(name);
+        definition = definition
+            .find_subcommand(name)
+            .expect("parsed command exists");
+        arguments = submatches;
+    }
+    let description = definition
+        .get_about()
+        .map(ToString::to_string)
+        .unwrap_or_default();
+    let result = (|| {
+        let success = match cli.command {
+            Task::Scan { path } => projects::scan(&ui, path),
+            Task::Clean { project, dry_run } => projects::clean(&ui, &project, dry_run),
+            Task::Schedule(action) => schedule::run(&ui, action),
+            Task::Hooks(action) => return hooks::run(&ui, action),
+            Task::Skill(action) => skill::run(&ui, action),
+            Task::Doctor => doctor::run(&ui),
+            Task::Explain => unreachable!(),
+        }?;
+        Ok(if success {
+            ExitCode::SUCCESS
+        } else {
+            ExitCode::FAILURE
+        })
+    })();
+    if remember && let Err(error) = explain::save(&ui, command_name, description, &result) {
+        // Saving diagnostics must never change a command's result or JSON output.
+        eprintln!(
+            "Could not save the explanation: {}",
+            ui::safe(&error.to_string())
+        );
+    }
+    result
 }
 
 fn main() -> ExitCode {

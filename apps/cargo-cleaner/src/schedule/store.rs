@@ -110,12 +110,18 @@ impl Store {
 
     pub(super) fn remove(&self, id: &str) -> Result<()> {
         ensure!(valid_id(id), "Invalid schedule ID");
+        let _lock = self.history_lock()?;
         fs::remove_file(self.path.join(format!("{id}.json")))
-            .wrap_err("Could not remove the schedule")
+            .wrap_err("Could not remove the schedule")?;
+        match fs::remove_file(self.path.join(format!("{id}.logs"))) {
+            Ok(()) => Ok(()),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
+            Err(error) => Err(error).wrap_err("Could not remove the schedule logs"),
+        }
     }
 }
 
-fn valid_id(id: &str) -> bool {
+pub(super) fn valid_id(id: &str) -> bool {
     id.strip_prefix("job-").is_some_and(|suffix| {
         !suffix.is_empty()
             && suffix.len() <= 32

@@ -1,7 +1,7 @@
 use serde_json::Value;
 use std::{
     fs,
-    os::unix::fs::symlink,
+    os::unix::fs::{PermissionsExt, symlink},
     path::Path,
     process::{Command, Output},
 };
@@ -189,6 +189,94 @@ fn prints_completions_and_rejects_short_flags() {
     assert!(String::from_utf8_lossy(&complete.stdout).starts_with("#compdef cargo-cleaner"));
     let short = cli(temp.path(), temp.path(), &["clean", "-h"]);
     assert!(!short.status.success());
+}
+
+#[test]
+fn schedule_logs_selects_saved_jobs_and_keeps_json_and_terminal_output_safe() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path().canonicalize().unwrap();
+    let state = if cfg!(target_os = "macos") {
+        root.join("Library/Application Support/cargo-cleaner")
+    } else {
+        root.join("cargo-cleaner")
+    };
+    let logs = || cli(&root, &root, &["schedule", "logs", "--json"]);
+    let empty = json(&logs(), true);
+    assert!(empty["id"].is_null());
+    assert_eq!(empty["runs"], serde_json::json!([]));
+    assert!(state.is_dir());
+
+    let save_job = |id| {
+        fs::write(
+            state.join(format!("{id}.json")),
+            serde_json::to_vec(&serde_json::json!({
+                "id": id,
+                "time": "daily at 02:30",
+                "scope": {"type": "system"}
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+    };
+    save_job("job-123");
+    let empty = json(&logs(), true);
+    assert_eq!(empty["id"], "job-123");
+    assert_eq!(empty["runs"], serde_json::json!([]));
+    let no_runs = cli(&root, &root, &["schedule", "logs"]);
+    assert!(no_runs.status.success());
+    assert!(String::from_utf8_lossy(&no_runs.stdout).contains("No recorded runs"));
+
+    let runs = serde_json::json!([
+        {
+            "id": "run-first", "status": "succeeded",
+            "started_at_unix_secs": 100, "finished_at_unix_secs": 101,
+            "duration_ms": 1000, "stdout": "Cleaned project\n", "stderr": "",
+            "stdout_truncated": false, "stderr_truncated": false, "error": null
+        },
+        {
+            "id": "run-second", "status": "failed",
+            "started_at_unix_secs": 200, "finished_at_unix_secs": 201,
+            "duration_ms": 1000, "stdout": "output\u{1b}[31m\nnext line\n",
+            "stderr": "warning\rhidden\n", "stdout_truncated": true,
+            "stderr_truncated": false, "error": "failure\u{1b}[2J"
+        }
+    ]);
+    let history = state.join("job-123.logs");
+    fs::write(&history, serde_json::to_vec(&runs).unwrap()).unwrap();
+    fs::set_permissions(&history, fs::Permissions::from_mode(0o600)).unwrap();
+    let result = json(&logs(), true);
+    assert_eq!(result["runs"][0], runs[1]);
+    assert_eq!(result["runs"][1], runs[0]);
+    let text = cli(&root, &root, &["schedule", "logs"]);
+    assert!(text.status.success());
+    let text = String::from_utf8(text.stdout).unwrap();
+    assert!(text.find("Failed").unwrap() < text.find("Succeeded").unwrap());
+    assert!(!text.contains('\u{1b}'));
+    assert!(!text.contains('\r'));
+    assert!(text.contains("\\u{1b}[31m"));
+    assert!(text.contains("stdout truncated at 64 KiB"));
+
+    save_job("job-456");
+    let ambiguous = logs();
+    assert!(!ambiguous.status.success());
+    assert!(ambiguous.stdout.is_empty());
+    let error = String::from_utf8_lossy(&ambiguous.stderr);
+    for hint in ["--id", "job-123", "job-456", "schedule list"] {
+        assert!(error.contains(hint));
+    }
+    let explicit = cli(
+        &root,
+        &root,
+        &["schedule", "logs", "--id", "job-456", "--json"],
+    );
+    assert_eq!(json(&explicit, true)["id"], "job-456");
+    let unknown = cli(
+        &root,
+        &root,
+        &["schedule", "logs", "--id", "../other", "--json"],
+    );
+    assert!(!unknown.status.success());
+    assert!(unknown.stdout.is_empty());
 }
 
 #[test]

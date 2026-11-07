@@ -1,4 +1,5 @@
 mod cron;
+mod logs;
 mod store;
 mod time;
 
@@ -36,6 +37,12 @@ pub enum Action {
     },
     /// Show saved schedules and their status
     List,
+    /// Show recent cleanup runs and their output
+    Logs {
+        /// Select a schedule by ID, or choose from saved schedules
+        #[arg(long)]
+        id: Option<String>,
+    },
     /// Stop future runs and keep the schedule
     Stop(Selection),
     /// Remove a schedule
@@ -94,6 +101,7 @@ pub fn run(ui: &Ui, action: Action) -> Result<bool> {
     match action {
         Action::Create { time, all, project } => create(ui, &time.join(" "), all, project),
         Action::List => list(ui),
+        Action::Logs { id } => logs::show(ui, id.as_deref()),
         Action::Stop(selection) => change(ui, selection, false),
         Action::Remove(selection) => change(ui, selection, true),
         Action::Run { id, state } => run_job(ui, &id, &state),
@@ -314,10 +322,25 @@ fn run_job(ui: &Ui, id: &str, state: &Path) -> Result<bool> {
     let Some(job) = store.jobs()?.into_iter().find(|job| job.id == id) else {
         return Ok(true);
     };
+    execute_job(ui, &store, job, lock)
+}
+
+fn execute_job(ui: &Ui, store: &Store, job: Job, lock: std::fs::File) -> Result<bool> {
+    let (run, started) = logs::start(store, &job.id)?;
     drop(lock);
     let roots = match job.scope {
         Scope::System => Roots::System,
         Scope::Projects(paths) => Roots::Projects(paths),
     };
-    projects::clean_roots(ui, &roots, false, Some(&store))
+    let recording = Ui::recording(ui.json);
+    let result = projects::clean_roots(&recording, &roots, false, Some(store));
+    logs::finish(
+        store,
+        &job.id,
+        run,
+        started,
+        recording.into_transcript(),
+        &result,
+    )?;
+    result
 }

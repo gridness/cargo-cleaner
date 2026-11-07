@@ -96,6 +96,8 @@ impl Cargo {
         // ASVS 1.2.5: pass paths as arguments and use the built-in metadata
         // command offline, without resolving dependencies or running build scripts.
         let output = Command::new(&self.0)
+            // Diagnostics are saved as plain text even when the caller forces color.
+            .env("CARGO_TERM_COLOR", "never")
             .args([
                 "--offline",
                 "metadata",
